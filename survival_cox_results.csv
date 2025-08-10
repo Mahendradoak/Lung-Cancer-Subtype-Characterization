@@ -1,0 +1,16 @@
+"Variable","HR","HR_lower","HR_upper","p_value"
+"clusterSubtype_2",0.969,0.767,1.223,0.789
+"clusterSubtype_3",0.968,0.713,1.313,0.8342
+"age_at_initial_pathologic_diagnosis",1.016,1.004,1.028,0.0071
+"pathologic_stage[Discrepancy]",0.389,0.132,1.145,0.0864
+"pathologic_stageStage I",0.534,0.154,1.848,0.3219
+"pathologic_stageStage IA",0.299,0.178,0.501,0
+"pathologic_stageStage IB",0.365,0.223,0.599,1e-04
+"pathologic_stageStage II",1.53,0.442,5.293,0.5016
+"pathologic_stageStage IIA",0.566,0.329,0.973,0.0393
+"pathologic_stageStage IIB",0.5,0.301,0.83,0.0074
+"pathologic_stageStage III",4.902,1.411,17.028,0.0123
+"pathologic_stageStage IIIA",0.711,0.427,1.185,0.1906
+"pathologic_stageStage IIIB",0.715,0.363,1.407,0.3313
+"pathologic_stageStage IV",NA,NA,NA,NA
+"genderMALE",1.176,0.941,1.469,0.1544
