@@ -31,15 +31,39 @@ print("STEP 1: Loading and preprocessing data...")
 EXPR_FILE <- "HiSeqV2"
 CLINICAL_FILE <- "TCGA.LUNG.sampleMap_LUNG_clinicalMatrix"
 MOFA_FACTORS_FILE <- "mofa_factors.csv"
+CNV_FILE <- "CNV_data"  # Optional: Set to NULL if CNV data not available
 
 expr_df <- as.data.frame(fread(EXPR_FILE))
 clinical_df <- as.data.frame(fread(CLINICAL_FILE))
 factor_df <- as.data.frame(fread(MOFA_FACTORS_FILE))
 
+# Load CNV data if available
+cnv_available <- FALSE
+cnv_df <- NULL
+
+if (!is.null(CNV_FILE) && file.exists(CNV_FILE)) {
+  print("Loading CNV data...")
+  cnv_df <- as.data.frame(fread(CNV_FILE))
+  rownames(cnv_df) <- cnv_df[, 1]
+  cnv_df <- cnv_df[, -1]
+  cnv_available <- TRUE
+  print(paste("- CNV data loaded:", nrow(cnv_df), "genes x", ncol(cnv_df), "samples"))
+} else {
+  print("- CNV data not found. Analysis will proceed with expression data only.")
+  print("- For comprehensive multi-omics analysis, please provide CNV data file.")
+}
+
 rownames(expr_df) <- expr_df[, 1]; expr_df <- expr_df[, -1]
 rownames(factor_df) <- factor_df[, 1]; factor_df <- factor_df[, -1]
 
-common_samples <- Reduce(intersect, list(colnames(expr_df), clinical_df$sampleID, rownames(factor_df)))
+# Identify common samples across all available datasets
+if (cnv_available) {
+  common_samples <- Reduce(intersect, list(colnames(expr_df), clinical_df$sampleID, rownames(factor_df), colnames(cnv_df)))
+  cnv_df <- cnv_df[, common_samples]
+  print(paste("- Common samples identified across expression, CNV, clinical, and MOFA data"))
+} else {
+  common_samples <- Reduce(intersect, list(colnames(expr_df), clinical_df$sampleID, rownames(factor_df)))
+}
 
 expr_df <- expr_df[, common_samples]
 clinical_df <- clinical_df[clinical_df$sampleID %in% common_samples, ]
@@ -49,6 +73,16 @@ factor_df <- factor_df[common_samples, ]
 gene_variances <- matrixStats::rowVars(as.matrix(expr_df), na.rm = TRUE)
 top_5000_genes <- names(sort(gene_variances, decreasing = TRUE)[1:5000])
 expr_df_final <- expr_df[top_5000_genes, ]
+
+# Prepare CNV data with same genes as expression
+if (cnv_available) {
+  # Get overlap between CNV genes and expression genes
+  common_genes <- intersect(rownames(cnv_df), top_5000_genes)
+  cnv_df_final <- cnv_df[common_genes, common_samples]
+  print(paste("- CNV data prepared:", nrow(cnv_df_final), "genes x", ncol(cnv_df_final), "samples"))
+} else {
+  cnv_df_final <- NULL
+}
 
 print(paste("- Data loaded and prepared for", length(common_samples), "samples."))
 print("---")
@@ -138,6 +172,100 @@ for (subtype_num in 1:3) {
   } else {
     print("- No genes could be mapped to Entrez IDs. Pathway analysis skipped.")
   }
+
+  # --- STEP 3.4: CNV Analysis (if available) ---
+  if (cnv_available && !is.null(cnv_df_final)) {
+    print(paste("STEP 3.4: Performing CNV analysis for", subtype_label, "..."))
+
+    # Perform differential CNV analysis
+    cnv_pvals <- apply(cnv_df_final, 1, function(cnv_values) {
+      res <- try(t.test(cnv_values[subtype_samples], cnv_values[other_samples]), silent = TRUE)
+      if (inherits(res, "try-error")) return(NA) else return(res$p.value)
+    })
+
+    mean_cnv_subtype <- apply(cnv_df_final[, subtype_samples], 1, mean, na.rm = TRUE)
+    mean_cnv_others <- apply(cnv_df_final[, other_samples], 1, mean, na.rm = TRUE)
+    cnv_diff <- mean_cnv_subtype - mean_cnv_others
+
+    cnv_analysis_df <- data.frame(
+      gene = rownames(cnv_df_final),
+      cnv_p_value = cnv_pvals,
+      cnv_diff = cnv_diff,
+      mean_cnv_subtype = mean_cnv_subtype,
+      mean_cnv_others = mean_cnv_others
+    )
+    cnv_analysis_df <- na.omit(cnv_analysis_df)
+    cnv_analysis_df$cnv_adj_p_value <- p.adjust(cnv_analysis_df$cnv_p_value, method = "BH")
+
+    # Identify significant CNV changes (amplifications and deletions)
+    # Threshold: FDR < 0.05 and |CNV difference| > 0.3 (common for GISTIC scores)
+    significant_cnv <- cnv_analysis_df[cnv_analysis_df$cnv_adj_p_value < 0.05 & abs(cnv_analysis_df$cnv_diff) > 0.3, ]
+
+    if (nrow(significant_cnv) > 0) {
+      # Classify as amplifications or deletions
+      significant_cnv$alteration_type <- ifelse(significant_cnv$cnv_diff > 0, "Amplification", "Deletion")
+
+      # Save CNV results
+      write.csv(significant_cnv, file.path(output_dir, paste0(subtype_label, "_CNV_alterations.csv")), row.names = FALSE)
+      print(paste("  - Found", nrow(significant_cnv), "significant CNV alterations"))
+      print(paste("    * Amplifications:", sum(significant_cnv$alteration_type == "Amplification")))
+      print(paste("    * Deletions:", sum(significant_cnv$alteration_type == "Deletion")))
+
+      # Store for later integration
+      if (!exists("all_cnv_lists")) all_cnv_lists <- list()
+      all_cnv_lists[[subtype_label]] <- significant_cnv
+    } else {
+      print("  - No significant CNV alterations found")
+    }
+
+    # --- STEP 3.5: CNV-Expression Correlation Analysis ---
+    print(paste("STEP 3.5: Analyzing CNV-expression correlations for", subtype_label, "..."))
+
+    # Focus on genes that are both in DEG list and CNV list
+    common_genes_for_cor <- intersect(significant_genes_df$gene, rownames(cnv_df_final))
+
+    if (length(common_genes_for_cor) > 0) {
+      correlation_results <- data.frame()
+
+      for (gene in common_genes_for_cor) {
+        expr_values <- as.numeric(expr_df_final[gene, subtype_samples])
+        cnv_values <- as.numeric(cnv_df_final[gene, subtype_samples])
+
+        # Remove NA values
+        valid_idx <- !is.na(expr_values) & !is.na(cnv_values)
+
+        if (sum(valid_idx) >= 3) {  # Need at least 3 samples
+          cor_test <- cor.test(expr_values[valid_idx], cnv_values[valid_idx], method = "pearson")
+
+          correlation_results <- rbind(correlation_results, data.frame(
+            gene = gene,
+            correlation = cor_test$estimate,
+            cor_p_value = cor_test$p.value,
+            n_samples = sum(valid_idx)
+          ))
+        }
+      }
+
+      if (nrow(correlation_results) > 0) {
+        correlation_results$cor_adj_p_value <- p.adjust(correlation_results$cor_p_value, method = "BH")
+
+        # Identify CNV-driven genes (strong positive correlation)
+        cnv_driven <- correlation_results[correlation_results$cor_adj_p_value < 0.05 & correlation_results$correlation > 0.3, ]
+
+        write.csv(correlation_results, file.path(output_dir, paste0(subtype_label, "_CNV_expression_correlations.csv")), row.names = FALSE)
+
+        if (nrow(cnv_driven) > 0) {
+          write.csv(cnv_driven, file.path(output_dir, paste0(subtype_label, "_CNV_driven_genes.csv")), row.names = FALSE)
+          print(paste("  - Found", nrow(cnv_driven), "CNV-driven genes (strong CNV-expression correlation)"))
+        }
+
+        print(paste("  - CNV-expression correlation analysis complete"))
+      }
+    } else {
+      print("  - No common genes between DEGs and CNV data for correlation analysis")
+    }
+  }
+
   print("---")
 }
 
@@ -311,31 +439,238 @@ if ("histological_type" %in% colnames(clinical_df) || "sample_type.samples" %in%
   print("- Histological type information not available. Skipping LUAD/LUSC validation.")
 }
 
-# --- 6. THERAPEUTIC TARGET ANALYSIS ---
-print("STEP 6: Identifying potential therapeutic targets...")
+# --- 6. INTEGRATED THERAPEUTIC TARGET ANALYSIS ---
+print("STEP 6: Integrated multi-omics therapeutic target analysis...")
+print("Known molecular drug targets will be explored further and their connections")
+print("will be identified within the scope of integrated multi-omics data.")
+print("")
+
 druggable_families <- c("EGFR", "ALK", "ROS1", "MET", "RET", "NTRK1", "NTRK2", "NTRK3", "BRAF", "PIK3CA", "AKT1", "MTOR", "CDK4", "CDK6", "ERBB2", "ERBB3", "FGFR1", "FGFR2", "FGFR3", "PDGFRA", "KIT", "TP53", "RB1", "CDKN2A", "STK11", "KEAP1", "PDCD1", "CTLA4", "CD274", "PDCD1LG2", "BRCA1", "BRCA2", "ATM", "CHEK2", "PALB2")
 
 therapeutic_targets <- data.frame()
+integrated_therapeutic_targets <- data.frame()
 
+# Step 6.1: Identify targets from expression data
+print("STEP 6.1: Identifying druggable targets from differential expression...")
 for (subtype in names(all_deg_lists)) {
   subtype_genes <- all_deg_lists[[subtype]]
   druggable_hits <- intersect(subtype_genes, druggable_families)
+
   if (length(druggable_hits) > 0) {
-    targets_temp <- data.frame(
-      Subtype = subtype,
-      Target_Gene = druggable_hits,
-      Gene_Family = "Druggable"
-    )
-    therapeutic_targets <- rbind(therapeutic_targets, targets_temp)
+    # Get expression data for these targets
+    deg_file <- file.path(output_dir, paste0(subtype, "_DEGs_enhanced.csv"))
+    if (file.exists(deg_file)) {
+      deg_data <- read.csv(deg_file)
+      target_expr_data <- deg_data[deg_data$gene %in% druggable_hits, ]
+
+      targets_temp <- data.frame(
+        Subtype = subtype,
+        Target_Gene = druggable_hits,
+        Evidence_Type = "Expression",
+        log2FC = target_expr_data$log2FC[match(druggable_hits, target_expr_data$gene)],
+        adj_p_value = target_expr_data$adj_p_value[match(druggable_hits, target_expr_data$gene)]
+      )
+      therapeutic_targets <- rbind(therapeutic_targets, targets_temp)
+    }
   }
 }
 
-if (nrow(therapeutic_targets) > 0) {
-  write.csv(therapeutic_targets, file.path(output_dir, "potential_therapeutic_targets.csv"), row.names = FALSE)
-  print(paste("- Identified", nrow(therapeutic_targets), "potential therapeutic targets."))
+# Step 6.2: Integrate CNV data for therapeutic targets (if available)
+if (cnv_available && exists("all_cnv_lists")) {
+  print("STEP 6.2: Integrating CNV alterations for therapeutic targets...")
+
+  for (subtype in names(all_cnv_lists)) {
+    cnv_data <- all_cnv_lists[[subtype]]
+    druggable_cnv_hits <- intersect(cnv_data$gene, druggable_families)
+
+    if (length(druggable_cnv_hits) > 0) {
+      cnv_target_data <- cnv_data[cnv_data$gene %in% druggable_cnv_hits, ]
+
+      cnv_targets_temp <- data.frame(
+        Subtype = subtype,
+        Target_Gene = druggable_cnv_hits,
+        Evidence_Type = "CNV",
+        CNV_diff = cnv_target_data$cnv_diff[match(druggable_cnv_hits, cnv_target_data$gene)],
+        CNV_adj_p_value = cnv_target_data$cnv_adj_p_value[match(druggable_cnv_hits, cnv_target_data$gene)],
+        Alteration_Type = cnv_target_data$alteration_type[match(druggable_cnv_hits, cnv_target_data$gene)]
+      )
+
+      # Add CNV evidence to targets
+      therapeutic_targets <- rbind(therapeutic_targets, cnv_targets_temp)
+    }
+  }
+
+  # Step 6.3: Create integrated multi-omics target summary
+  print("STEP 6.3: Creating integrated multi-omics target prioritization...")
+
+  # For each unique target gene across all subtypes
+  unique_targets <- unique(therapeutic_targets$Target_Gene)
+
+  for (target in unique_targets) {
+    target_data <- therapeutic_targets[therapeutic_targets$Target_Gene == target, ]
+
+    for (subtype in unique(target_data$Subtype)) {
+      subtype_target <- target_data[target_data$Subtype == subtype, ]
+
+      # Check if we have both expression and CNV evidence
+      has_expr <- "Expression" %in% subtype_target$Evidence_Type
+      has_cnv <- "CNV" %in% subtype_target$Evidence_Type
+
+      expr_log2fc <- NA
+      expr_pval <- NA
+      cnv_diff <- NA
+      cnv_pval <- NA
+      alteration_type <- "None"
+      evidence_strength <- "Single"
+
+      if (has_expr) {
+        expr_row <- subtype_target[subtype_target$Evidence_Type == "Expression", ]
+        expr_log2fc <- expr_row$log2FC[1]
+        expr_pval <- expr_row$adj_p_value[1]
+      }
+
+      if (has_cnv) {
+        cnv_row <- subtype_target[subtype_target$Evidence_Type == "CNV", ]
+        cnv_diff <- cnv_row$CNV_diff[1]
+        cnv_pval <- cnv_row$CNV_adj_p_value[1]
+        alteration_type <- cnv_row$Alteration_Type[1]
+      }
+
+      if (has_expr && has_cnv) {
+        evidence_strength <- "Multi-omics"
+      }
+
+      # Classify target
+      target_class <- case_when(
+        target %in% c("EGFR", "ALK", "ROS1", "MET", "RET", "BRAF") ~ "Kinase Inhibitor",
+        target %in% c("PDCD1", "CTLA4", "CD274", "PDCD1LG2") ~ "Immunotherapy",
+        target %in% c("FGFR1", "FGFR2", "FGFR3", "ERBB2", "ERBB3", "PDGFRA", "KIT") ~ "Growth Factor Receptor",
+        target %in% c("NTRK1", "NTRK2", "NTRK3") ~ "Neurotrophic Receptor",
+        target %in% c("TP53", "RB1", "CDKN2A", "STK11", "KEAP1") ~ "Tumor Suppressor",
+        target %in% c("CDK4", "CDK6") ~ "Cell Cycle Regulator",
+        target %in% c("PIK3CA", "AKT1", "MTOR") ~ "PI3K/AKT/mTOR Pathway",
+        target %in% c("BRCA1", "BRCA2", "ATM", "CHEK2", "PALB2") ~ "DNA Damage Response",
+        TRUE ~ "Other"
+      )
+
+      # Clinical status
+      clinical_status <- case_when(
+        target %in% c("EGFR", "ALK", "ROS1", "MET", "RET", "BRAF", "PDCD1", "CTLA4", "CD274") ~ "FDA Approved",
+        target %in% c("FGFR1", "FGFR2", "FGFR3", "NTRK1", "NTRK2", "NTRK3", "ERBB2", "CDK4", "CDK6") ~ "In Clinical Trials",
+        TRUE ~ "Preclinical/Research"
+      )
+
+      integrated_row <- data.frame(
+        Subtype = subtype,
+        Target_Gene = target,
+        Target_Class = target_class,
+        Clinical_Status = clinical_status,
+        Evidence_Strength = evidence_strength,
+        Expression_log2FC = expr_log2fc,
+        Expression_adj_p = expr_pval,
+        CNV_difference = cnv_diff,
+        CNV_adj_p = cnv_pval,
+        CNV_Alteration_Type = alteration_type
+      )
+
+      integrated_therapeutic_targets <- rbind(integrated_therapeutic_targets, integrated_row)
+    }
+  }
+
+  # Prioritize targets with multi-omics evidence
+  integrated_therapeutic_targets$Priority_Score <- 0
+
+  for (i in 1:nrow(integrated_therapeutic_targets)) {
+    score <- 0
+
+    # Expression evidence
+    if (!is.na(integrated_therapeutic_targets$Expression_adj_p[i])) {
+      if (integrated_therapeutic_targets$Expression_adj_p[i] < 0.001) score <- score + 3
+      else if (integrated_therapeutic_targets$Expression_adj_p[i] < 0.01) score <- score + 2
+      else score <- score + 1
+
+      if (!is.na(integrated_therapeutic_targets$Expression_log2FC[i])) {
+        if (abs(integrated_therapeutic_targets$Expression_log2FC[i]) > 2) score <- score + 2
+        else if (abs(integrated_therapeutic_targets$Expression_log2FC[i]) > 1) score <- score + 1
+      }
+    }
+
+    # CNV evidence
+    if (!is.na(integrated_therapeutic_targets$CNV_adj_p[i])) {
+      if (integrated_therapeutic_targets$CNV_adj_p[i] < 0.001) score <- score + 3
+      else if (integrated_therapeutic_targets$CNV_adj_p[i] < 0.01) score <- score + 2
+      else score <- score + 1
+
+      if (!is.na(integrated_therapeutic_targets$CNV_difference[i])) {
+        if (abs(integrated_therapeutic_targets$CNV_difference[i]) > 0.5) score <- score + 2
+        else score <- score + 1
+      }
+    }
+
+    # Multi-omics bonus
+    if (integrated_therapeutic_targets$Evidence_Strength[i] == "Multi-omics") {
+      score <- score + 5
+    }
+
+    # FDA approved bonus
+    if (integrated_therapeutic_targets$Clinical_Status[i] == "FDA Approved") {
+      score <- score + 3
+    } else if (integrated_therapeutic_targets$Clinical_Status[i] == "In Clinical Trials") {
+      score <- score + 2
+    }
+
+    integrated_therapeutic_targets$Priority_Score[i] <- score
+  }
+
+  # Sort by priority score
+  integrated_therapeutic_targets <- integrated_therapeutic_targets[order(-integrated_therapeutic_targets$Priority_Score), ]
+
+  write.csv(integrated_therapeutic_targets, file.path(output_dir, "integrated_therapeutic_targets_prioritized.csv"), row.names = FALSE)
+
+  print(paste("- Identified", nrow(integrated_therapeutic_targets), "therapeutic targets with integrated evidence"))
+  print(paste("  * Multi-omics evidence:", sum(integrated_therapeutic_targets$Evidence_Strength == "Multi-omics"), "targets"))
+  print(paste("  * FDA approved targets:", sum(integrated_therapeutic_targets$Clinical_Status == "FDA Approved")))
+  print(paste("  * Targets in clinical trials:", sum(integrated_therapeutic_targets$Clinical_Status == "In Clinical Trials")))
+
+  # Step 6.4: Analyze target co-occurrence patterns
+  print("STEP 6.4: Analyzing therapeutic target co-occurrence patterns...")
+
+  cooccurrence_summary <- data.frame()
+
+  for (subtype in unique(integrated_therapeutic_targets$Subtype)) {
+    subtype_targets <- integrated_therapeutic_targets[integrated_therapeutic_targets$Subtype == subtype, ]
+    high_priority <- subtype_targets[subtype_targets$Priority_Score >= median(subtype_targets$Priority_Score), ]
+
+    if (nrow(high_priority) > 0) {
+      cooccurrence_row <- data.frame(
+        Subtype = subtype,
+        N_Total_Targets = nrow(subtype_targets),
+        N_High_Priority_Targets = nrow(high_priority),
+        High_Priority_Targets = paste(high_priority$Target_Gene, collapse = ", "),
+        Multi_omics_Targets = paste(high_priority$Target_Gene[high_priority$Evidence_Strength == "Multi-omics"], collapse = ", ")
+      )
+      cooccurrence_summary <- rbind(cooccurrence_summary, cooccurrence_row)
+    }
+  }
+
+  write.csv(cooccurrence_summary, file.path(output_dir, "therapeutic_target_cooccurrence_by_subtype.csv"), row.names = FALSE)
+  print("- Target co-occurrence analysis complete")
+
 } else {
-  print("- No known druggable targets identified in DEG lists.")
+  # No CNV data available - use expression only
+  print("STEP 6.2: CNV data not available - using expression-only evidence")
+
+  if (nrow(therapeutic_targets) > 0) {
+    integrated_therapeutic_targets <- therapeutic_targets
+    integrated_therapeutic_targets$Evidence_Strength <- "Expression only"
+    write.csv(integrated_therapeutic_targets, file.path(output_dir, "potential_therapeutic_targets.csv"), row.names = FALSE)
+    print(paste("- Identified", nrow(therapeutic_targets), "potential therapeutic targets from expression data"))
+  } else {
+    print("- No known druggable targets identified in DEG lists.")
+  }
 }
+
+print("---")
 
 # --- 7. COMPREHENSIVE SUMMARY REPORT ---
 print("STEP 7: Generating comprehensive summary...")
@@ -750,6 +1085,172 @@ tryCatch({
   ggsave(file.path(enhanced_dir, "panel_D_therapeutic_targets.pdf"), plot_d, width = 8, height = 6, dpi = 300)
   print("Individual panels saved successfully!")
 })
+
+# 9. INTEGRATED CNV-EXPRESSION VISUALIZATIONS (if CNV data available)
+if (cnv_available && exists("all_cnv_lists")) {
+  print("8.9: Creating integrated CNV-expression visualizations...")
+
+  # 9.1: CNV alteration landscape across subtypes
+  print("8.9.1: Creating CNV alteration landscape...")
+
+  cnv_landscape_data <- data.frame()
+  for (subtype in names(all_cnv_lists)) {
+    cnv_data <- all_cnv_lists[[subtype]]
+    cnv_summary <- data.frame(
+      Subtype = subtype,
+      Alteration_Type = cnv_data$alteration_type,
+      Count = 1
+    )
+    cnv_landscape_data <- rbind(cnv_landscape_data, cnv_summary)
+  }
+
+  if (nrow(cnv_landscape_data) > 0) {
+    cnv_landscape_summary <- cnv_landscape_data %>%
+      group_by(Subtype, Alteration_Type) %>%
+      summarise(N = sum(Count), .groups = "drop")
+
+    cnv_landscape_plot <- ggplot(cnv_landscape_summary, aes(x = Subtype, y = N, fill = Alteration_Type)) +
+      geom_col(position = "dodge", alpha = 0.8, width = 0.7) +
+      scale_fill_manual(values = c("Amplification" = "#E74C3C", "Deletion" = "#3498DB"), name = "CNV Type") +
+      labs(
+        title = "CNV Alteration Landscape Across Molecular Subtypes",
+        subtitle = "Distribution of genomic amplifications and deletions",
+        x = "Molecular Subtype",
+        y = "Number of Significant CNV Alterations"
+      ) +
+      theme_minimal() +
+      theme(
+        plot.title = element_text(size = 14, face = "bold"),
+        plot.subtitle = element_text(size = 11, color = "gray40"),
+        axis.title = element_text(size = 12, face = "bold"),
+        axis.text.x = element_text(size = 11),
+        legend.position = "bottom",
+        panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank()
+      )
+
+    ggsave(file.path(enhanced_dir, "cnv_alteration_landscape.pdf"), cnv_landscape_plot, width = 10, height = 7, dpi = 300)
+    print("- CNV alteration landscape plot created")
+  }
+
+  # 9.2: Multi-omics target evidence plot
+  if (exists("integrated_therapeutic_targets") && nrow(integrated_therapeutic_targets) > 0) {
+    print("8.9.2: Creating multi-omics therapeutic target evidence plot...")
+
+    # Filter for targets with multi-omics evidence
+    multiomics_targets <- integrated_therapeutic_targets[integrated_therapeutic_targets$Evidence_Strength == "Multi-omics", ]
+
+    if (nrow(multiomics_targets) > 0) {
+      # Create a bubble plot showing both expression and CNV evidence
+      multiomics_plot <- ggplot(multiomics_targets, aes(x = Expression_log2FC, y = CNV_difference)) +
+        geom_hline(yintercept = 0, linetype = "dashed", color = "gray60", alpha = 0.7) +
+        geom_vline(xintercept = 0, linetype = "dashed", color = "gray60", alpha = 0.7) +
+        geom_point(aes(size = Priority_Score, color = Target_Class), alpha = 0.7) +
+        geom_text_repel(aes(label = Target_Gene), size = 3, fontface = "bold", max.overlaps = 15) +
+        scale_color_brewer(type = "qual", palette = "Set2", name = "Target Class") +
+        scale_size_continuous(range = c(3, 10), name = "Priority Score") +
+        labs(
+          title = "Multi-omics Therapeutic Target Evidence",
+          subtitle = "Integrated view of expression changes and CNV alterations",
+          x = "Expression log₂ Fold Change",
+          y = "CNV Difference (GISTIC score)",
+          caption = "Size indicates target priority based on multi-omics evidence strength"
+        ) +
+        theme_minimal() +
+        theme(
+          plot.title = element_text(size = 14, face = "bold"),
+          plot.subtitle = element_text(size = 11, color = "gray40"),
+          plot.caption = element_text(size = 9, color = "gray60"),
+          axis.title = element_text(size = 12, face = "bold"),
+          legend.position = "bottom",
+          legend.box = "vertical",
+          panel.grid.minor = element_blank()
+        )
+
+      ggsave(file.path(enhanced_dir, "multiomics_therapeutic_targets.pdf"), multiomics_plot, width = 12, height = 10, dpi = 300)
+      print("- Multi-omics therapeutic target plot created")
+    }
+  }
+
+  # 9.3: CNV-expression correlation scatter plots for top targets
+  print("8.9.3: Creating CNV-expression correlation plots for biomarkers...")
+
+  # Create correlation plots for each subtype's top biomarkers
+  for (subtype_num in 1:3) {
+    subtype_label <- paste0("Subtype_", subtype_num)
+
+    # Check if correlation file exists
+    cor_file <- file.path(output_dir, paste0(subtype_label, "_CNV_driven_genes.csv"))
+
+    if (file.exists(cor_file)) {
+      cnv_driven <- read.csv(cor_file)
+
+      if (nrow(cnv_driven) > 0) {
+        # Select top 6 CNV-driven genes for visualization
+        top_cnv_driven <- head(cnv_driven[order(-abs(cnv_driven$correlation)), ], 6)
+
+        # Get samples for this subtype
+        subtype_samples <- clinical_df$sampleID[clinical_df$cluster == subtype_label]
+
+        # Create scatter plots
+        scatter_plots <- list()
+
+        for (i in 1:nrow(top_cnv_driven)) {
+          gene <- top_cnv_driven$gene[i]
+          cor_val <- round(top_cnv_driven$correlation[i], 3)
+          cor_p <- format(top_cnv_driven$cor_adj_p_value[i], scientific = TRUE, digits = 2)
+
+          # Get expression and CNV data
+          expr_vals <- as.numeric(expr_df_final[gene, subtype_samples])
+          cnv_vals <- as.numeric(cnv_df_final[gene, subtype_samples])
+
+          plot_data <- data.frame(
+            Expression = expr_vals,
+            CNV = cnv_vals
+          )
+          plot_data <- na.omit(plot_data)
+
+          p <- ggplot(plot_data, aes(x = CNV, y = Expression)) +
+            geom_point(alpha = 0.6, color = subtype_colors[subtype_label]) +
+            geom_smooth(method = "lm", color = "black", linetype = "dashed", se = TRUE, alpha = 0.2) +
+            labs(
+              title = gene,
+              subtitle = paste0("r = ", cor_val, ", p = ", cor_p),
+              x = "CNV (GISTIC score)",
+              y = "Expression (log₂)"
+            ) +
+            theme_minimal() +
+            theme(
+              plot.title = element_text(size = 10, face = "bold"),
+              plot.subtitle = element_text(size = 8, color = "gray40"),
+              axis.title = element_text(size = 9)
+            )
+
+          scatter_plots[[i]] <- p
+        }
+
+        # Combine into multi-panel figure
+        if (length(scatter_plots) >= 4) {
+          combined_scatter <- wrap_plots(scatter_plots[1:min(6, length(scatter_plots))], ncol = 3) +
+            plot_annotation(
+              title = paste("CNV-Expression Correlations:", subtype_label),
+              subtitle = "Top CNV-driven genes with significant correlations",
+              theme = theme(
+                plot.title = element_text(size = 14, face = "bold"),
+                plot.subtitle = element_text(size = 11, color = "gray40")
+              )
+            )
+
+          ggsave(file.path(enhanced_dir, paste0("cnv_expression_correlations_", subtype_label, ".pdf")),
+                 combined_scatter, width = 12, height = 8, dpi = 300)
+          print(paste("- CNV-expression correlation plots created for", subtype_label))
+        }
+      }
+    }
+  }
+
+  print("- Integrated CNV-expression visualizations complete!")
+}
 
 # THERAPEUTIC TARGETS TABLE SUMMARY
 create_findings_summary <- function() {

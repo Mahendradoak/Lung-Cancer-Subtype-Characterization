@@ -4,15 +4,65 @@
 
 ## Overview
 
- 
+
 
 This repository contains a comprehensive multi-omics analysis pipeline for identifying and characterizing molecular subtypes of lung cancer. The analysis integrates gene expression data, copy number variations (CNV), and clinical information using Multi-Omics Factor Analysis (MOFA) to discover novel molecular subtypes that transcend traditional histological classifications (LUAD/LUSC).
+
+## Recent Enhancements
+
+This analysis pipeline has been enhanced based on feedback to provide a more comprehensive multi-omics integration:
+
+### Key Improvements:
+
+1. **Enhanced Problem Statements**: Clear, precise problem statements with specific objectives for each analysis component, particularly for therapeutic target identification.
+
+2. **Integrated CNV Analysis**:
+   - Differential CNV analysis identifying subtype-specific amplifications and deletions
+   - CNV-expression correlation analysis to identify CNV-driven genes
+   - Integration of CNV and expression evidence for biomarker and therapeutic target prioritization
+
+3. **Holistic Multi-omics Therapeutic Target Analysis**:
+   - Not just listing known targets, but exploring their connections within integrated data
+   - Evidence strength scoring based on both CNV and expression data
+   - Priority scoring system combining statistical significance, effect size, and clinical relevance
+   - Co-occurrence pattern analysis of therapeutic targets
+
+4. **Enriched Downstream Analysis**:
+   - All major downstream analyses now integrate both CNV and transcriptomics data
+   - CNV-driven genes identified through correlation analysis
+   - Multi-omics evidence synthesis for biomarker validation
+
+5. **Enhanced Visualizations**:
+   - CNV alteration landscape across subtypes
+   - Multi-omics therapeutic target bubble plots
+   - CNV-expression correlation scatter plots
+   - Integrated evidence visualization
+
+## Problem Statements
+
+This analysis addresses the following key research questions:
+
+1. **Multi-omics Subtype Discovery**: Can integration of gene expression and CNV data reveal molecular subtypes that transcend traditional histological classifications (LUAD/LUSC)?
+
+2. **Biological Characterization**: What are the distinct molecular signatures (gene expression and copy number alterations) that define each subtype, and what biological pathways are dysregulated?
+
+3. **Biomarker Identification**: Which genes show consistent differential expression and copy number changes that could serve as diagnostic or prognostic biomarkers for each subtype?
+
+4. **Therapeutic Target Analysis**: Known molecular drug targets will be explored further and their connections will be identified within the scope of integrated multi-omics data. Specifically, we will:
+   - Identify druggable targets showing both transcriptional dysregulation and genomic alterations
+   - Characterize the co-occurrence patterns of multiple targetable alterations within subtypes
+   - Map therapeutic targets to their affected biological networks and pathways
+   - Prioritize targets based on multi-omics evidence strength
+
+5. **Clinical Relevance**: Do the identified molecular subtypes have clinical implications in terms of survival outcomes and treatment stratification?
+
+6. **CNV-Expression Integration**: How do copy number alterations influence gene expression patterns, and which CNV-driven genes are potential therapeutic targets?
 
  
 
 ## Key Features
 
- 
+
 
 - **Multi-omics Integration**: Combines gene expression and CNV data using MOFA factors
 
@@ -20,15 +70,21 @@ This repository contains a comprehensive multi-omics analysis pipeline for ident
 
 - **Differential Gene Expression**: Comprehensive DEG analysis for each subtype
 
+- **Differential CNV Analysis**: Identifies subtype-specific copy number alterations
+
+- **CNV-Expression Integration**: Correlates genomic alterations with transcriptional changes
+
 - **Pathway Enrichment**: KEGG and Gene Ontology (GO) biological process enrichment
 
-- **Biomarker Discovery**: Identification of top 20 biomarkers per subtype
+- **Biomarker Discovery**: Identification of top 20 biomarkers per subtype with multi-omics validation
 
 - **Survival Analysis**: Kaplan-Meier and Cox proportional hazards regression
 
-- **Therapeutic Target Identification**: Discovery of actionable druggable targets
+- **Integrated Therapeutic Target Identification**: Discovery of actionable druggable targets supported by both CNV and expression evidence
 
-- **Publication-Ready Visualizations**: High-quality figures for manuscripts and presentations
+- **Network Analysis**: Exploration of target connections and co-occurrence patterns
+
+- **Publication-Ready Visualizations**: High-quality integrated multi-omics figures for manuscripts and presentations
 
  
 
@@ -154,11 +210,11 @@ BiocManager::install(c("clusterProfiler", "org.Hs.eg.db", "enrichplot"))
 
 ## Input Data Requirements
 
- 
 
-The analysis requires three main input files:
 
- 
+The analysis requires four main input files:
+
+
 
 1. **Gene Expression Matrix** (`HiSeqV2`):
 
@@ -170,9 +226,23 @@ The analysis requires three main input files:
 
    - Values: Normalized expression values (log2)
 
- 
 
-2. **Clinical Data** (`TCGA.LUNG.sampleMap_LUNG_clinicalMatrix`):
+
+2. **Copy Number Variation Data** (`CNV_data` or similar):
+
+   - Format: Tab-delimited text file or CSV
+
+   - Rows: Genes (gene symbols)
+
+   - Columns: Samples (TCGA barcodes)
+
+   - Values: GISTIC2 scores or log2 copy number ratios
+
+   - Note: GISTIC scores typically range from -2 (deletion) to +2 (amplification)
+
+
+
+3. **Clinical Data** (`TCGA.LUNG.sampleMap_LUNG_clinicalMatrix`):
 
    - Format: CSV file with header
 
@@ -180,15 +250,15 @@ The analysis requires three main input files:
 
    - Recommended columns: `OS.time`, `OS`, `histological_type`, `age_at_initial_pathologic_diagnosis`
 
- 
 
-3. **MOFA Factors** (`mofa_factors.csv`):
+
+4. **MOFA Factors** (`mofa_factors.csv`):
 
    - Format: CSV file with sample IDs as rownames
 
-   - Columns: Latent factors from MOFA integration
+   - Columns: Latent factors from MOFA integration (derived from expression + CNV)
 
-   - Samples must overlap with expression and clinical data
+   - Samples must overlap with expression, CNV, and clinical data
 
  
 
@@ -246,7 +316,9 @@ The analysis requires three main input files:
 
 #### CSV Files
 
- 
+
+
+**Core Analysis Results**
 
 | File | Description |
 
@@ -254,75 +326,167 @@ The analysis requires three main input files:
 
 | `clinical_with_subtypes.csv` | Clinical data with assigned molecular subtypes |
 
-| `Subtype_X_DEGs_enhanced.csv` | Differentially expressed genes for each subtype |
-
-| `Subtype_X_top20_biomarkers.csv` | Top 20 biomarker genes per subtype |
-
-| `Subtype_X_KEGG_enrichment.csv` | KEGG pathway enrichment results |
-
-| `Subtype_X_GO_BP_enrichment.csv` | GO Biological Process enrichment results |
-
-| `comprehensive_biomarker_panel.csv` | All biomarkers across subtypes |
-
-| `potential_therapeutic_targets.csv` | Identified druggable targets |
-
-| `detailed_therapeutic_targets.csv` | Detailed therapeutic target information with clinical status |
-
-| `survival_cox_results.csv` | Cox proportional hazards regression results |
-
-| `survival_summary.csv` | Summary statistics for survival analysis |
-
-| `subtype_histology_contingency.csv` | Cross-tabulation of subtypes vs histology |
-
-| `subtype_histology_proportions.csv` | Proportions of histological types per subtype |
-
 | `analysis_summary_statistics.csv` | Overall analysis summary metrics |
 
 | `key_findings_summary.csv` | Key findings and clinical significance |
 
- 
 
-### Enhanced Visualizations Directory: `R_results_characterization/enhanced_visualizations/`
 
- 
+**Differential Expression Results**
 
 | File | Description |
 
 |------|-------------|
 
+| `Subtype_X_DEGs_enhanced.csv` | Differentially expressed genes for each subtype (3 files) |
+
+| `Subtype_X_top20_biomarkers.csv` | Top 20 biomarker genes per subtype (3 files) |
+
+| `comprehensive_biomarker_panel.csv` | All biomarkers across subtypes |
+
+
+
+**CNV Analysis Results** (if CNV data provided)
+
+| File | Description |
+
+|------|-------------|
+
+| `Subtype_X_CNV_alterations.csv` | Significant copy number alterations for each subtype (3 files) |
+
+| `Subtype_X_CNV_expression_correlations.csv` | CNV-expression correlation analysis (3 files) |
+
+| `Subtype_X_CNV_driven_genes.csv` | Genes with strong CNV-expression correlations (3 files) |
+
+
+
+**Pathway Enrichment Results**
+
+| File | Description |
+
+|------|-------------|
+
+| `Subtype_X_KEGG_enrichment.csv` | KEGG pathway enrichment results (3 files) |
+
+| `Subtype_X_GO_BP_enrichment.csv` | GO Biological Process enrichment results (3 files) |
+
+
+
+**Therapeutic Target Analysis**
+
+| File | Description |
+
+|------|-------------|
+
+| `integrated_therapeutic_targets_prioritized.csv` | Comprehensive multi-omics therapeutic target analysis with priority scoring |
+
+| `therapeutic_target_cooccurrence_by_subtype.csv` | Co-occurrence patterns of therapeutic targets within subtypes |
+
+| `potential_therapeutic_targets.csv` | Basic therapeutic target list (expression-only if no CNV data) |
+
+| `detailed_therapeutic_targets.csv` | Legacy detailed therapeutic target information |
+
+
+
+**Survival Analysis**
+
+| File | Description |
+
+|------|-------------|
+
+| `survival_cox_results.csv` | Cox proportional hazards regression results |
+
+| `survival_summary.csv` | Summary statistics for survival analysis |
+
+
+
+**Histological Validation**
+
+| File | Description |
+
+|------|-------------|
+
+| `subtype_histology_contingency.csv` | Cross-tabulation of subtypes vs histology |
+
+| `subtype_histology_proportions.csv` | Proportions of histological types per subtype |
+
+ 
+
+### Enhanced Visualizations Directory: `R_results_characterization/enhanced_visualizations/`
+
+
+
+**Core Visualizations**
+
+| File | Description |
+
+|------|-------------|
+
+| `enhanced_MOFA_PCA.pdf` | PCA visualization of MOFA factor space with subtype separation |
+
 | `enhanced_pathway_enrichment.pdf` | Dot plot showing top enriched pathways across subtypes |
 
-| `enhanced_biomarker_heatmap.pdf` | Heatmap of biomarker expression patterns |
+| `enhanced_biomarker_heatmap.pdf` | Heatmap of biomarker expression patterns across samples |
 
-| `enhanced_survival_plot.pdf` | Kaplan-Meier survival curves with confidence intervals |
+| `enhanced_survival_plot.pdf` | Kaplan-Meier survival curves with confidence intervals and risk tables |
 
-| `enhanced_sankey_diagram.pdf` | Flow diagram showing histological transcendence |
+| `enhanced_sankey_diagram.pdf` | Flow diagram showing histological transcendence across subtypes |
 
-| `enhanced_volcano_Subtype_X.pdf` | Volcano plots highlighting therapeutic targets (3 files) |
+| `publication_summary_figure.pdf` | Multi-panel summary figure for publications |
 
-| `enhanced_MOFA_PCA.pdf` | PCA visualization of MOFA factor space |
+
+
+**Subtype-Specific Visualizations**
+
+| File | Description |
+
+|------|-------------|
+
+| `enhanced_volcano_Subtype_X.pdf` | Volcano plots highlighting therapeutic targets and DEGs (3 files) |
+
+
+
+**Therapeutic Target Visualizations**
+
+| File | Description |
+
+|------|-------------|
 
 | `therapeutic_targets_by_subtype.pdf` | Bar plot of therapeutic targets per subtype |
 
 | `therapeutic_targets_by_class.pdf` | Therapeutic targets grouped by drug class |
 
-| `publication_summary_figure.pdf` | Multi-panel summary figure for publications |
+
+
+**Integrated Multi-omics Visualizations** (if CNV data provided)
+
+| File | Description |
+
+|------|-------------|
+
+| `cnv_alteration_landscape.pdf` | Distribution of CNV amplifications and deletions across subtypes |
+
+| `multiomics_therapeutic_targets.pdf` | Bubble plot showing integrated CNV and expression evidence for therapeutic targets |
+
+| `cnv_expression_correlations_Subtype_X.pdf` | Multi-panel scatter plots showing CNV-expression correlations for top genes (3 files) |
 
  
 
 ## Analysis Workflow
 
- 
+
 
 1. **Data Loading and Preprocessing** (Step 1)
 
-   - Load expression, clinical, and MOFA factor data
+   - Load expression, CNV, clinical, and MOFA factor data
 
    - Identify common samples across all datasets
 
    - Select top 5,000 most variable genes
 
- 
+   - Process CNV data for differential analysis
+
+
 
 2. **Subtype Discovery** (Step 2)
 
@@ -330,17 +494,21 @@ The analysis requires three main input files:
 
    - Assignment of samples to molecular subtypes
 
- 
 
-3. **Biological Characterization** (Step 3)
+
+3. **Multi-omics Biological Characterization** (Step 3)
 
    - Differential gene expression analysis (t-test, FDR < 0.05, |log2FC| > 0.5)
+
+   - Differential CNV analysis for each subtype
 
    - Top 20 biomarker identification per subtype
 
    - KEGG and GO pathway enrichment analysis
 
- 
+   - CNV-expression correlation analysis
+
+
 
 4. **Survival Analysis** (Step 4)
 
@@ -350,7 +518,7 @@ The analysis requires three main input files:
 
    - Cox proportional hazards regression with clinical covariates
 
- 
+
 
 5. **Histological Validation** (Step 5)
 
@@ -358,21 +526,29 @@ The analysis requires three main input files:
 
    - Chi-square test for independence
 
- 
 
-6. **Therapeutic Target Analysis** (Step 6)
+
+6. **Integrated Therapeutic Target Analysis** (Step 6)
 
    - Identification of druggable genes among DEGs
+
+   - CNV analysis of therapeutic targets (amplifications/deletions)
+
+   - Integration of CNV and expression evidence for target prioritization
 
    - Classification by drug class (kinase inhibitors, immunotherapy, etc.)
 
    - Clinical status annotation (FDA approved, clinical trials, preclinical)
 
- 
+   - Network analysis of target connections and co-occurrence patterns
+
+
 
 7. **Visualization and Reporting** (Step 7-8)
 
    - Generation of publication-ready figures
+
+   - Integrated CNV-expression visualizations
 
    - Summary statistics and key findings tables
 
