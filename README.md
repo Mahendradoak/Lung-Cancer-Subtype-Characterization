@@ -630,11 +630,6 @@ The Cancer Genome Atlas Research Network. Comprehensive molecular profiling of l
 
  
 
-## License
-
- 
-
-[Add your license information here]
 
  
 
